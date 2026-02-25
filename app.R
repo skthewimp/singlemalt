@@ -180,9 +180,11 @@ server <- function(input, output, session) {
       fill_col  <- adjustcolor(col, alpha.f = 0.15)
       df        <- filter(profile, group == grp)
       scores    <- df$score[match(flavors, df$flavor)]
+      # +1 offset so zero-scored flavors don't collapse to the centre of the wheel.
+      # Tick labels are remapped back to the original 0–4 scale in the layout below.
       p <- add_trace(
         p,
-        r         = c(scores, scores[1]),
+        r         = c(scores + 1, scores[1] + 1),
         theta     = c(flavors, flavors[1]),
         name      = grp,
         fill      = "toself",
@@ -193,7 +195,14 @@ server <- function(input, output, session) {
     }
     p |>
       layout(
-        polar  = list(radialaxis = list(visible = TRUE, range = c(0, 4))),
+        polar = list(
+          radialaxis = list(
+            range       = c(0, 5),
+            tickvals    = c(1, 2, 3, 4, 5),
+            ticktext    = c("0", "1", "2", "3", "4"),
+            tickfont    = list(size = 10)
+          )
+        ),
         legend = list(orientation = "h"),
         margin = list(t = 40, r = 80, l = 80, b = 40)
       ) |>
