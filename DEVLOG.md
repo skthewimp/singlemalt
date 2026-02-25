@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-02-25 — Radar label clipping + zero-score polygon collapse
+
+**Two bugs found via Playwright visual testing across 5 test cases.**
+
+**Bug 1 — Label clipping.** "Tobacco" (right side) and "Sweetness" (left side) were both cut off by the card boundary. Fixed by setting explicit margins `l=80, r=80` in the plotly layout.
+
+**Bug 2 — Zero-score collapse (the bigger problem).** Whiskies with many zero-scored flavors (Glenfiddich has 6/12 zeros: Medicinal, Tobacco, Honey, Spicy, Winey, Nutty) produced sharp spikes pointing to the exact centre of the radar rather than a polygon shape. This is because a score of 0 on a `scatterpolar` trace maps to radius = 0, i.e. the centre point, collapsing the polygon edge.
+
+Fix: add +1 to all displayed scores before plotting, then remap the axis tick labels back to the original 0–4 scale using `tickvals`/`ticktext`. The centre of the wheel now represents "below minimum possible score", so even a zero-scored flavor shows a visible polygon edge. This is a display-only transform — the similarity algorithm is unaffected.
+
+```r
+r = c(scores + 1, scores[1] + 1)   # offset for display only
+
+# axis remapped so labels still read 0-4
+radialaxis = list(
+  range    = c(0, 5),
+  tickvals = c(1, 2, 3, 4, 5),
+  ticktext = c("0", "1", "2", "3", "4")
+)
+```
+
+---
+
 ## 2026-02-25 — Radar colour palette
 
 **Problem.** The default plotly colour cycle has arbitrary hue spacing and, more critically,
