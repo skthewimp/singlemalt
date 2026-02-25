@@ -195,7 +195,7 @@ server <- function(input, output, session) {
       layout(
         polar  = list(radialaxis = list(visible = TRUE, range = c(0, 4))),
         legend = list(orientation = "h"),
-        margin = list(t = 40)
+        margin = list(t = 40, r = 80, l = 80, b = 40)
       ) |>
       config(displayModeBar = FALSE)
   })
