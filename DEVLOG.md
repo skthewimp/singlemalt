@@ -1,5 +1,49 @@
 # Development Log — Single Malt Whisky Recommender
 
+---
+
+## 2026-02-25 — Radar colour palette
+
+**Problem.** The default plotly colour cycle has arbitrary hue spacing and, more critically,
+`opacity = 0.5` was being applied to the entire trace — meaning both the fill *and* the border
+line became semi-transparent. When two traces overlap you lose the ability to clearly distinguish
+their edges.
+
+**Fix.** Two separate concerns, handled separately:
+
+*Hue selection.* Used the **Okabe-Ito** palette — 8 colours designed for maximum perceptual
+distance and full accessibility under the two most common forms of colour-blindness (deuteranopia,
+protanopia). Amber is assigned position 1 so "your picks" always gets the warm whisky-toned
+colour; recommendations get blue, teal, vermillion, etc.
+
+```r
+radar_palette <- c(
+  "#E69F00",  # amber   — your picks
+  "#0072B2",  # blue
+  "#009E73",  # teal
+  "#D55E00",  # vermillion
+  "#CC79A7",  # mauve
+  "#56B4E9",  # sky blue
+  "#F0E442",  # yellow
+  "#000000"   # black
+)
+```
+
+*Fill vs. line opacity.* Solid lines (`width = 2`, full opacity) let you trace each shape's
+boundary clearly. Fills use `adjustcolor(col, alpha.f = 0.15)` — light enough that overlapping
+regions remain visible through each other.  `opacity = 1` on the trace keeps the line crisp.
+
+```r
+fill_col <- adjustcolor(col, alpha.f = 0.15)
+add_trace(p, ..., fillcolor = fill_col, line = list(color = col, width = 2), opacity = 1)
+```
+
+The palette cycles via `(i - 1) %% length(radar_palette) + 1`, so it handles any number of
+traces without error (though beyond 8 traces the cycle repeats, which is an acceptable edge case
+given typical usage).
+
+---
+
 This file documents the decisions, reasoning, and code changes made to this app.
 New entries go at the top.
 

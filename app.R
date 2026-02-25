@@ -18,12 +18,32 @@ wh_long <- wh |>
   mutate(score_z = (score - mean(score)) / sd(score)) |>
   ungroup()
 
+# Fixed circular ordering of flavors for the radar chart:
+# cluster flavors by their inter-correlation across distilleries so that
+# similar flavors sit adjacent on the wheel and dissimilar ones face each other.
+flavor_cor   <- wh |> select(all_of(flavor_cols)) |> cor()
+flavor_order <- flavor_cols[hclust(as.dist(1 - flavor_cor), method = "ward.D2")$order]
+
+# Radar chart palette — Okabe-Ito (colorblind-safe, maximum perceptual spacing).
+# Amber is first so "your picks" always gets the warm whisky-toned colour.
+# Traces use solid lines at full opacity + very light fills so overlaps stay readable.
+radar_palette <- c(
+  "#E69F00",  # amber        — your picks
+  "#0072B2",  # blue
+  "#009E73",  # teal
+  "#D55E00",  # vermillion
+  "#CC79A7",  # mauve
+  "#56B4E9",  # sky blue
+  "#F0E442",  # yellow
+  "#000000"   # black
+)
+
 # ── Similarity helpers ───────────────────────────────────────────────────────
 
 # Unit-normalise a numeric vector
 unit_norm <- function(x) x / sqrt(sum(x^2))
 
-# Compute cosine similarity between a reference profile and all distilleries
+# Compute cosine similarity + top contributing flavors for each distillery
 compute_similarity <- function(ref_distilleries) {
   ref_profile <- wh_long |>
     filter(Distillery %in% ref_distilleries) |>
@@ -31,12 +51,25 @@ compute_similarity <- function(ref_distilleries) {
     summarise(ref_z = mean(score_z), .groups = "drop") |>
     mutate(ref_z = unit_norm(ref_z))
 
-  wh_long |>
+  per_flavor <- wh_long |>
     filter(!Distillery %in% ref_distilleries) |>
     group_by(Distillery) |>
     mutate(score_z = unit_norm(score_z)) |>
+    ungroup() |>
     inner_join(ref_profile, by = "flavor") |>
-    summarise(similarity = sum(score_z * ref_z), .groups = "drop") |>
+    mutate(contribution = score_z * ref_z)
+
+  # Top 3 positively contributing flavors per distillery
+  why <- per_flavor |>
+    filter(contribution > 0) |>
+    group_by(Distillery) |>
+    slice_max(contribution, n = 3) |>
+    summarise(Because = paste(tolower(flavor), collapse = ", "), .groups = "drop")
+
+  per_flavor |>
+    group_by(Distillery) |>
+    summarise(similarity = sum(contribution), .groups = "drop") |>
+    left_join(why, by = "Distillery") |>
     arrange(desc(similarity))
 }
 
@@ -60,31 +93,16 @@ ui <- page_sidebar(
     helpText("Select one or more whiskies you enjoy to see what else you might like.")
   ),
 
-  navset_card_underline(
-    nav_panel(
-      "Recommendations",
+  layout_columns(
+    col_widths = c(5, 7),
+    card(
+      card_header("Recommendations"),
+      helpText("Click rows to compare their flavour profiles on the right."),
       DTOutput("tbl_recommendations")
     ),
-    nav_panel(
-      "Flavour Profiles",
-      uiOutput("ui_flavor_note"),
-      plotlyOutput("plot_radar", height = "500px")
-    ),
-    nav_panel(
-      "About",
-      card(
-        card_header("About this app"),
-        p("This app recommends Scottish single malt whiskies based on flavour similarity.
-           It uses cosine similarity on 12 flavour characteristics — Body, Sweetness, Smoky,
-           Medicinal, Tobacco, Honey, Spicy, Winey, Nutty, Malty, Fruity, and Floral — scored
-           0–4 for 86 distilleries."),
-        p("Select your favourite malts in the sidebar and the app will find others with the
-           closest flavour profile."),
-        p(strong("Data source: "),
-          a("Scotch Whisky dataset, University of Strathclyde",
-            href = "https://www.mathstat.strath.ac.uk/outreach/nessie/nessie_whisky.html",
-            target = "_blank"))
-      )
+    card(
+      card_header("Flavour profiles"),
+      plotlyOutput("plot_radar", height = "420px")
     )
   )
 )
@@ -108,49 +126,69 @@ server <- function(input, output, session) {
         Rank       = row_number(),
         Similarity = paste0(round(similarity * 100, 1), "%")
       ) |>
-      select(Rank, Distillery, Similarity) |>
+      select(Rank, Distillery, Similarity, Because) |>
       datatable(
         rownames  = FALSE,
+        selection = "multiple",
         options   = list(pageLength = 10, dom = "tip"),
         class     = "hover stripe"
       )
   })
 
   # ── Flavour radar chart ────────────────────────────────────────────────────
-  output$ui_flavor_note <- renderUI({
-    if (length(input$ref_malts) == 0) {
-      helpText("Select at least one whisky to see its flavour profile compared with
-               the top recommendation.")
-    }
-  })
-
   output$plot_radar <- renderPlotly({
     req(length(input$ref_malts) > 0, nrow(reco()) > 0)
 
-    top_reco <- reco()$Distillery[1]
+    # Distilleries to show from the table: selected rows, or top 1 as default
+    selected_rows <- input$tbl_recommendations_rows_selected
+    chart_recos <- if (length(selected_rows) > 0) {
+      reco()$Distillery[selected_rows]
+    } else {
+      reco()$Distillery[1]
+    }
 
-    # Raw (un-normalised) flavor scores for plotting
-    profile <- wh_long |>
-      filter(Distillery %in% c(input$ref_malts, top_reco)) |>
-      mutate(group = if_else(Distillery %in% input$ref_malts, "Your selection", top_reco)) |>
+    # Label for the user's picks
+    sel <- input$ref_malts
+    sel_label <- if (length(sel) <= 3) {
+      paste(sel, collapse = " + ")
+    } else {
+      paste0(paste(sel[1:3], collapse = " + "), " + ", length(sel) - 3, " more")
+    }
+
+    # Build profile data: user's picks averaged into one trace, each reco as its own
+    user_profile <- wh_long |>
+      filter(Distillery %in% sel) |>
+      group_by(flavor) |>
+      summarise(score = mean(score), .groups = "drop") |>
+      mutate(group = sel_label)
+
+    reco_profiles <- wh_long |>
+      filter(Distillery %in% chart_recos) |>
+      rename(group = Distillery) |>
       group_by(group, flavor) |>
       summarise(score = mean(score), .groups = "drop")
 
-    flavors <- sort(unique(profile$flavor))
+    profile <- bind_rows(user_profile, reco_profiles)
+    flavors <- flavor_order  # fixed data-driven order, consistent across all charts
 
-    # Build one trace per group using a loop
+    # Build one trace per group — solid lines, light fills so overlaps stay legible
     groups <- unique(profile$group)
     p <- plot_ly(type = "scatterpolar")
-    for (grp in groups) {
-      df     <- filter(profile, group == grp)
-      scores <- df$score[match(flavors, df$flavor)]
+    for (i in seq_along(groups)) {
+      grp       <- groups[i]
+      col       <- radar_palette[(i - 1) %% length(radar_palette) + 1]
+      fill_col  <- adjustcolor(col, alpha.f = 0.15)
+      df        <- filter(profile, group == grp)
+      scores    <- df$score[match(flavors, df$flavor)]
       p <- add_trace(
         p,
-        r       = c(scores, scores[1]),
-        theta   = c(flavors, flavors[1]),
-        name    = grp,
-        fill    = "toself",
-        opacity = 0.6
+        r         = c(scores, scores[1]),
+        theta     = c(flavors, flavors[1]),
+        name      = grp,
+        fill      = "toself",
+        fillcolor = fill_col,
+        line      = list(color = col, width = 2),
+        opacity   = 1
       )
     }
     p |>
